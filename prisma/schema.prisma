@@ -1,0 +1,552 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+//
+// ENUMS
+//
+
+enum OrganizationTier {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  GUEST
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  DISABLED
+}
+
+enum RoomType {
+  INSTANT
+  SCHEDULED
+  PERMANENT
+  WEBINAR
+  SUPPORT
+}
+
+enum RoomParticipantRole {
+  HOST
+  CO_HOST
+  SPEAKER
+  LISTENER
+}
+
+enum CallStatus {
+  ONGOING
+  ENDED
+  FAILED
+}
+
+enum JoinMethod {
+  WEB
+  MOBILE
+  DESKTOP
+  PSTN
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  RECONNECTING
+  DISCONNECTED
+  FAILED
+}
+
+enum MediaTrackType {
+  AUDIO
+  VIDEO
+  SCREEN
+}
+
+enum MediaTrackDirection {
+  SEND
+  RECEIVE
+}
+
+enum RecordingFormat {
+  MP4
+  WEBM
+  MPEG_DASH
+}
+
+enum RecordingLayout {
+  GRID
+  ACTIVE_SPEAKER
+  SCREEN_ONLY
+}
+
+enum RecordingStatus {
+  PROCESSING
+  READY
+  FAILED
+  DELETED
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+  ROOM
+  CALL_SESSION
+  SYSTEM
+}
+
+enum MessageType {
+  TEXT
+  SYSTEM
+  FILE
+  REACTION
+  CALL_EVENT
+}
+
+enum AttachmentType {
+  FILE
+  IMAGE
+  AUDIO
+  VIDEO
+  RECORDING_LINK
+}
+
+enum DeviceType {
+  WEB
+  ANDROID
+  IOS
+  DESKTOP
+}
+
+enum PresenceStatus {
+  ONLINE
+  OFFLINE
+  AWAY
+  DND
+}
+
+enum SettingScopeType {
+  ORGANIZATION
+  USER
+  ROOM
+}
+
+//
+// CORE MODELS
+//
+
+model Organization {
+  id        String            @id @default(uuid())
+  name      String
+  slug      String            @unique
+  tier      OrganizationTier
+  timezone  String?
+  logoUrl   String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  deletedAt DateTime?
+
+  members       OrganizationMember[]
+  rooms         Room[]
+  conversations Conversation[]
+  auditLogs     AuditLog[]
+  apiKeys       ApiKey[]
+  userPresence  UserPresence[]
+  settings      Setting[]
+
+  @@index([tier])
+  @@index([deletedAt])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  avatarUrl    String?
+  locale       String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime?
+
+  organizationMemberships OrganizationMember[]
+  invitedMembers          OrganizationMember[] @relation("MemberInvitedBy")
+  roomParticipants        RoomParticipant[]
+  callParticipants        CallParticipant[]
+  messages                Message[]
+  devices                 Device[]
+  conversationParticipants ConversationParticipant[]
+  userPresence            UserPresence[]
+  startedCallSessions     CallSession[]       @relation("CallStartedBy")
+  recordingsStarted       Recording[]         @relation("RecordingStartedBy")
+  notifications           Notification[]
+  auditLogs               AuditLog[]         @relation("AuditActor")
+  settings                Setting[]
+
+  @@index([createdAt])
+  rooms Room[]
+  conversations Conversation[]
+}
+
+model OrganizationMember {
+  id             String        @id @default(uuid())
+  organizationId String
+  userId         String
+  role           MemberRole
+  status         MemberStatus
+  joinedAt       DateTime?
+  invitedById    String?
+  metadata       Json?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  invitedBy    User?        @relation("MemberInvitedBy", fields: [invitedById], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId, role])
+}
+
+model ApiKey {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  keyHash        String   @unique
+  scopes         Json?
+  lastUsedAt     DateTime?
+  createdAt      DateTime @default(now())
+  revokedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId])
+}
+
+//
+// Rooms / Calls / Media
+//
+
+model Room {
+  id              String              @id @default(uuid())
+  organizationId  String?
+  name            String
+  code            String
+  type            RoomType
+  isLocked        Boolean             @default(false)
+  isPersistent    Boolean             @default(false)
+  maxParticipants Int?
+  createdById     String
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deletedAt       DateTime?
+
+  organization  Organization?      @relation(fields: [organizationId], references: [id])
+  createdBy     User               @relation(fields: [createdById], references: [id])
+  participants  RoomParticipant[]
+  callSessions  CallSession[]
+  conversations Conversation[]
+  userPresence  UserPresence[]
+  settings      Setting[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, type])
+  @@index([createdById, createdAt])
+  recordings Recording[]
+}
+
+model RoomParticipant {
+  id             String               @id @default(uuid())
+  roomId         String
+  userId         String?
+  displayName    String
+  role           RoomParticipantRole
+  joinedAt       DateTime
+  leftAt         DateTime?
+  isBanned       Boolean              @default(false)
+  metadata       Json?
+
+  room           Room                 @relation(fields: [roomId], references: [id])
+  user           User?                @relation(fields: [userId], references: [id])
+  callParticipants CallParticipant[]
+
+  @@index([roomId, joinedAt])
+  @@index([userId, joinedAt])
+}
+
+model CallSession {
+  id              String           @id @default(uuid())
+  roomId          String
+  startedById     String
+  status          CallStatus
+  startedAt       DateTime         @default(now())
+  endedAt         DateTime?
+  endedReason     String?
+  signalingRegion String?
+  metadata        Json?
+
+  room         Room          @relation(fields: [roomId], references: [id])
+  startedBy    User          @relation("CallStartedBy", fields: [startedById], references: [id])
+  participants CallParticipant[]
+  mediaTracks  MediaTrack[]
+  recordings   Recording[]
+  conversations Conversation[]
+
+  @@index([roomId, startedAt])
+  @@index([status, startedAt])
+}
+
+model CallParticipant {
+  id                String            @id @default(uuid())
+  callSessionId     String
+  userId            String?
+  roomParticipantId String?
+  joinAt            DateTime
+  leaveAt           DateTime?
+  joinMethod        JoinMethod
+  connectionStatus  ConnectionStatus
+  qualityScore      Int?
+  stats             Json?
+
+  callSession    CallSession    @relation(fields: [callSessionId], references: [id])
+  user           User?          @relation(fields: [userId], references: [id])
+  roomParticipant RoomParticipant? @relation(fields: [roomParticipantId], references: [id])
+  mediaTracks    MediaTrack[]
+
+  @@index([callSessionId, joinAt])
+  @@index([userId, callSessionId])
+}
+
+model MediaTrack {
+  id                 String              @id @default(uuid())
+  callSessionId      String
+  callParticipantId  String
+  type               MediaTrackType
+  direction          MediaTrackDirection
+  codec              String?
+  resolutionWidth    Int?
+  resolutionHeight   Int?
+  bitrateAvgKbps     Float?
+  firstPacketAt      DateTime?
+  lastPacketAt       DateTime?
+  stats              Json?
+
+  callSession    CallSession    @relation(fields: [callSessionId], references: [id])
+  callParticipant CallParticipant @relation(fields: [callParticipantId], references: [id])
+
+  @@index([callSessionId])
+  @@index([callParticipantId])
+}
+
+model Recording {
+  id             String           @id @default(uuid())
+  callSessionId  String
+  roomId         String
+  startedById    String?
+  storageUrl     String
+  durationSec    Int?
+  sizeBytes      BigInt?
+  format         RecordingFormat
+  layout         RecordingLayout
+  status         RecordingStatus
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  deletedAt      DateTime?
+
+  callSession CallSession @relation(fields: [callSessionId], references: [id])
+  room        Room        @relation(fields: [roomId], references: [id])
+  startedBy   User?       @relation("RecordingStartedBy", fields: [startedById], references: [id])
+
+  @@index([roomId])
+  @@index([status])
+}
+
+//
+// Chat / Messaging
+//
+
+model Conversation {
+  id              String                    @id @default(uuid())
+  organizationId  String
+  type            ConversationType
+  roomId          String?
+  callSessionId   String?
+  title           String?
+  createdById     String
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  organization Organization               @relation(fields: [organizationId], references: [id])
+  room         Room?                      @relation(fields: [roomId], references: [id])
+  callSession  CallSession?               @relation(fields: [callSessionId], references: [id])
+  createdBy    User                       @relation(fields: [createdById], references: [id])
+
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@index([organizationId, type])
+  @@index([roomId])
+  @@index([callSessionId])
+}
+
+model ConversationParticipant {
+  id              String        @id @default(uuid())
+  conversationId  String
+  userId          String
+  role            MemberRole    @default(MEMBER) // hoặc enum riêng nếu cần
+  lastReadAt      DateTime?
+  mutedUntil      DateTime?
+  createdAt       DateTime      @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([conversationId, userId])
+  @@index([userId, lastReadAt])
+}
+
+model Message {
+  id              String        @id @default(uuid())
+  conversationId  String
+  senderId        String?
+  type            MessageType
+  contentText     String?
+  contentJson     Json?
+  replyToId       String?
+  createdAt       DateTime      @default(now())
+  editedAt        DateTime?
+  deletedAt       DateTime?
+  isPinned        Boolean       @default(false)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+  sender       User?        @relation(fields: [senderId], references: [id])
+
+  replyTo Message?  @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies Message[] @relation("MessageReplies")
+
+  attachments Attachment[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+  @@index([replyToId])
+}
+
+model Attachment {
+  id          String         @id @default(uuid())
+  messageId   String
+  type        AttachmentType
+  url         String
+  fileName    String
+  mimeType    String
+  sizeBytes   BigInt?
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+
+  @@index([messageId])
+}
+
+//
+// Presence / Devices / Notification
+//
+
+model Device {
+  id          String     @id @default(uuid())
+  userId      String
+  deviceType  DeviceType
+  deviceId    String
+  pushToken   String?
+  userAgent   String?
+  lastSeenAt  DateTime?
+  createdAt   DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, deviceType])
+  @@index([deviceId])
+}
+
+model UserPresence {
+  id              String         @id @default(uuid())
+  organizationId  String
+  userId          String
+  status          PresenceStatus
+  lastActiveAt    DateTime
+  currentRoomId   String?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  currentRoom  Room?        @relation(fields: [currentRoomId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([status, lastActiveAt])
+}
+
+model Notification {
+  id          String     @id @default(uuid())
+  userId      String
+  type        String     // ví dụ: "MESSAGE", "CALL_INVITE"...
+  payload     Json
+  isRead      Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+  readAt      DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead, createdAt])
+}
+
+//
+// Settings & Audit
+//
+
+model Setting {
+  id         String           @id @default(uuid())
+  scopeType  SettingScopeType
+  scopeId    String
+  key        String
+  value      Json
+  updatedAt  DateTime         @updatedAt
+
+  organization Organization? @relation(fields: [scopeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // scopeId có thể map sang User / Room bằng code, Prisma không enforce đa kiểu được
+  // nên quan hệ ở đây chỉ để tham khảo (tuỳ bạn có muốn hay xoá dòng trên đi)
+
+  @@unique([scopeType, scopeId, key])
+  users User[]
+  rooms Room[]
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  entityType     String
+  entityId       String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  actor        User?        @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([entityType, entityId])
+}
